@@ -1,0 +1,15 @@
+services:
+  rigol-mcp:
+    build: .
+    image: rigol-mcp:local
+    container_name: rigol-mcp
+    restart: unless-stopped
+    # Files in ./data are created as this user. Set UID/GID in .env (run `id -u` / `id -g`).
+    user: "${UID:-1000}:${GID:-1000}"
+    env_file: .env
+    environment:
+      RIGOL_HTTP_PORT: "8790"   # port inside the container; change the host side below
+    ports:
+      - "${RIGOL_HOST_PORT:-8790}:8790"
+    volumes:
+      - ./data:/data            # screenshots/ and waveforms/, browsable on the host
