@@ -145,8 +145,10 @@ and takes turns for everyone. It serves MCP over HTTP with a token and hosts the
  other MCP clients ────┘     :8790/mcp       (gallery, history)
 ```
 
-The prebuilt image `ghcr.io/lfhohmann/rigol-mcp` runs on amd64 and arm64 (including the
-Raspberry Pi 4 and 5). You don't need to clone the repo.
+The prebuilt image runs on amd64 and arm64 (including the Raspberry Pi 4 and 5) and is
+published to both [Docker Hub](https://hub.docker.com/r/lfhohmann/rigol-mcp)
+(`lfhohmann/rigol-mcp`) and GitHub (`ghcr.io/lfhohmann/rigol-mcp`). Both are the same image,
+so use whichever you prefer. You don't need to clone the repo.
 
 | Tag | Meaning |
 |---|---|
@@ -173,7 +175,8 @@ Raspberry Pi 4 and 5). You don't need to clone the repo.
    docker compose up -d
    ```
 
-   To update later, run `docker compose pull && docker compose up -d`. To build from source
+   `compose.yaml` pulls from GHCR; to use Docker Hub instead, change its `image:` line to
+   `lfhohmann/rigol-mcp:latest`. To update later, run `docker compose pull && docker compose up -d`. To build from source
    instead, clone the repo and run
    `docker compose -f compose.yaml -f compose.build.yaml up -d --build`.
 
@@ -194,6 +197,17 @@ Raspberry Pi 4 and 5). You don't need to clone the repo.
 
 Screenshots and waveforms are written to `./data/screenshots` and `./data/waveforms` on the host.
 The container restarts automatically (`restart: unless-stopped`).
+
+Without compose, a single command does the same:
+
+```bash
+mkdir -p data
+docker run -d --name rigol-mcp --restart unless-stopped -p 8790:8790 \
+  -u "$(id -u):$(id -g)" -v "$PWD/data:/data" \
+  -e RIGOL_HOST=192.168.1.50 -e RIGOL_MCP_TOKEN=<your-token> \
+  -e RIGOL_PUBLIC_URL=http://192.168.1.10:8790 \
+  lfhohmann/rigol-mcp:latest
+```
 
 ## Option 3: HTTP without Docker
 
