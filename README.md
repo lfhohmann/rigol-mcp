@@ -127,6 +127,9 @@ and takes turns for everyone. It serves MCP over HTTP with a token and hosts the
    docker compose up -d --build
    ```
 
+   To use the prebuilt image instead of building it, change `build: .` and `image:` in
+   `compose.yaml` to `image: ghcr.io/lfhohmann/rigol-mcp:latest`, then run `docker compose up -d`.
+
 4. Check that it's up (no token needed):
 
    ```bash
