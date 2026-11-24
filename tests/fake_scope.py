@@ -1,9 +1,17 @@
-"""A tiny fake DS1000Z that speaks enough SCPI over TCP for the tests."""
+"""A small stateful fake DS1000Z that speaks enough SCPI over TCP for the tests.
+
+Signal on every channel: a square wave, 120 samples per period, low byte 60 / high byte 190
+(no clipping). On screen: 1200 points at 10 us/sample, so 833.3 Hz.
+"""
 
 import socket
 import struct
 import threading
+import time
 import zlib
+
+PERIOD = 120
+XINC = 1e-5
 
 
 def tiny_png() -> bytes:
@@ -18,28 +26,55 @@ def block(data: bytes) -> bytes:
     return b"#" + str(len(size)).encode() + size + data + b"\n"
 
 
-class FakeScope:
-    REPLIES = {
-        "*IDN?": "RIGOL TECHNOLOGIES,DS1104Z,FAKE0000000001,00.04.04.SP3",
-        ":TRIG:STAT?": "TD", ":TRIG:MODE?": "EDGE", ":TRIG:EDG:SOUR?": "CHAN1",
-        ":TRIG:EDG:SLOP?": "POS", ":TRIG:EDG:LEV?": "1.400000e+00",
-        ":TIM:SCAL?": "1.000000e-03", ":TIM:OFFS?": "0.000000e+00", ":ACQ:SRAT?": "2.500000e+08",
-        ":CHAN1:DISP?": "1", ":CHAN2:DISP?": "0", ":CHAN3:DISP?": "0", ":CHAN4:DISP?": "0",
-        ":CHAN1:SCAL?": "5.000000e-01", ":CHAN1:OFFS?": "0.000000e+00", ":CHAN1:COUP?": "DC",
-        ":CHAN1:PROB?": "1.000000e+00", ":SYST:ERR?": '0,"No error"',
-        # preamble: format,type,points,count,xinc,xorig,xref,yinc,yorig,yref
-        ":WAV:PRE?": "0,0,1200,1,1.000000e-05,-6.000000e-03,0,4.000000e-02,-27,127",
-    }
-    MEASURE = {"VPP": "3.300000e+00", "FREQ": "1.000000e+03", "VAVG": "1.650000e+00", "VRMS": "2.000000e+00"}
+def square(start: int, count: int) -> bytes:
+    return bytes(190 if (i % PERIOD) < PERIOD // 2 else 60 for i in range(start, start + count))
 
-    def __init__(self):
+
+class FakeScope:
+    MEASURE = {"VPP": "3.300000e+00", "FREQ": "1.000000e+03", "VAVG": "1.650000e+00", "VRMS": "2.000000e+00",
+               "RDELAY": "1.000000e-03", "RPHASE": "3.600000e+01"}
+
+    def __init__(self, memory_depth: int = 600_000, trigger_after: float = 0.3):
+        self.memory_depth = memory_depth
+        self.trigger_after = trigger_after  # seconds after :SING until the "event" happens
+        self.state = {
+            "*IDN": "RIGOL TECHNOLOGIES,DS1104Z,FAKE0000000001,00.04.04.SP3",
+            ":TRIG:MODE": "EDGE", ":TRIG:EDG:SOUR": "CHAN1", ":TRIG:EDG:SLOP": "POS",
+            ":TRIG:EDG:LEV": "1.400000e+00", ":TRIG:SWE": "AUTO", ":TRIG:COUP": "DC", ":TRIG:HOLD": "1.600000e-08",
+            ":TIM:SCAL": "1.000000e-03", ":TIM:OFFS": "0.000000e+00", ":TIM:MAIN:SCAL": "1.000000e-03",
+            ":TIM:MAIN:OFFS": "0.000000e+00", ":TIM:MODE": "MAIN", ":ACQ:SRAT": "1.000000e+05",
+            ":ACQ:MDEP": str(memory_depth), ":ACQ:TYPE": "NORM", ":ACQ:AVER": "2",
+            ":CHAN1:DISP": "1", ":CHAN2:DISP": "0", ":CHAN3:DISP": "0", ":CHAN4:DISP": "0",
+            ":CHAN1:SCAL": "5.000000e-01", ":CHAN1:OFFS": "0.000000e+00", ":CHAN1:COUP": "DC",
+            ":CHAN1:PROB": "1.000000e+00", ":CHAN1:BWL": "OFF", ":CHAN1:INV": "0",
+            ":WAV:MODE": "NORM", ":WAV:STAR": "1", ":WAV:STOP": "1200", ":WAV:SOUR": "CHAN1",
+        }
+        self.run_state = "RUN"  # RUN | SINGLE | STOP
+        self.armed_at = 0.0
+        self.writes: list[str] = []
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen()
         self.port = self.sock.getsockname()[1]
-        self.writes = []
         threading.Thread(target=self._serve, daemon=True).start()
 
+    # --- trigger state machine -------------------------------------------------------
+    def trig_status(self) -> str:
+        if self.run_state == "RUN":
+            return "TD"
+        if self.run_state == "SINGLE":
+            if self.trigger_after is not None and time.monotonic() - self.armed_at >= self.trigger_after:
+                self.run_state = "STOP"
+                return "STOP"
+            return "WAIT"
+        return "STOP"
+
+    def preamble(self) -> str:
+        points = self.memory_depth if self.state[":WAV:MODE"] == "RAW" else 1200
+        # format,type,points,count,xinc,xorig,xref,yinc,yorig,yref
+        return f"0,{2 if points > 1200 else 0},{points},1,{XINC:e},-6.000000e-03,0,2.000000e-02,-127,0"
+
+    # --- socket handling -------------------------------------------------------------
     def _serve(self):
         while True:
             try:
@@ -51,24 +86,52 @@ class FakeScope:
     def _client(self, conn):
         f = conn.makefile("rb")
         for raw in f:
-            cmd = raw.decode().strip()
-            if cmd.startswith(":MEAS:ITEM?"):
-                item = cmd.split()[1].split(",")[0].upper()
-                if item == "RTIM":
-                    conn.sendall(b"measure error!\n\n")  # real scopes leave a stray newline
-                else:
-                    conn.sendall((self.MEASURE.get(item, "9.9E37") + "\n").encode())
-            elif cmd == ":WAV:DATA?":
-                conn.sendall(block(bytes((i % 256) for i in range(1200))))
-            elif cmd.startswith(":DISP:DATA?"):
-                conn.sendall(block(tiny_png()))
-            elif cmd in self.REPLIES:
-                conn.sendall((self.REPLIES[cmd] + "\n").encode())
-            elif cmd.endswith("?"):
-                conn.sendall(b"0\n")
-            else:
-                self.writes.append(cmd)
+            reply = self.handle(raw.decode().strip())
+            if reply is not None:
+                conn.sendall(reply)
         conn.close()
+
+    def handle(self, cmd: str):
+        if cmd.endswith("?") or cmd.startswith(":MEAS:ITEM?") or cmd.startswith(":DISP:DATA?"):
+            return self.query(cmd)
+        self.writes.append(cmd)
+        head, _, value = cmd.partition(" ")
+        if head == ":RUN":
+            self.run_state = "RUN"
+        elif head == ":STOP":
+            self.run_state = "STOP"
+        elif head == ":SING":
+            self.run_state, self.armed_at = "SINGLE", time.monotonic()
+        elif value:
+            if head.endswith((":DISP", ":INV")):
+                value = "1" if value in ("ON", "1") else "0"
+            self.state[head] = value
+        return None
+
+    def query(self, cmd: str) -> bytes:
+        if cmd.startswith(":MEAS:ITEM?"):
+            args = cmd.split(None, 1)[1].split(",")
+            if args[0].upper() == "RTIM":
+                return b"measure error!\n\n"  # real scopes leave a stray newline
+            return (self.MEASURE.get(args[0].upper(), "9.9E37") + "\n").encode()
+        if cmd == ":WAV:DATA?":
+            if self.state[":WAV:MODE"] == "RAW":
+                start, stop = int(self.state[":WAV:STAR"]), int(self.state[":WAV:STOP"])
+                stop = min(stop, self.memory_depth)
+                return block(square(start - 1, stop - start + 1))
+            return block(square(0, 1200))
+        if cmd.startswith(":DISP:DATA?"):
+            return block(tiny_png())
+        key = cmd[:-1]
+        if key == ":TRIG:STAT":
+            return (self.trig_status() + "\n").encode()
+        if key == ":WAV:PRE":
+            return (self.preamble() + "\n").encode()
+        if key == "*OPC":
+            return b"1\n"
+        if key == ":SYST:ERR":
+            return b'0,"No error"\n'
+        return (self.state.get(key, "0") + "\n").encode()
 
     def close(self):
         self.sock.close()

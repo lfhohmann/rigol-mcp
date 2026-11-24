@@ -8,9 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-KINDS = {"screenshots": ("screenshot", ".png"), "waveforms": ("waveform", ".csv")}
+KINDS = {
+    "screenshots": ("screenshot", (".png",)),
+    "waveforms": ("waveform", (".csv",)),
+    "exports": ("export", (".bin", ".csv")),  # full-memory dumps, with a .json sidecar
+}
 NAME_RE = re.compile(
-    r"^(?P<prefix>screenshot|waveform)_(?P<id>\d{8}T\d{6}\.\d{3}Z)(?:_ch(?P<ch>[1-4]))?\.(?:png|csv)$"
+    r"^(?P<prefix>screenshot|waveform|export)_(?P<id>\d{8}T\d{6}\.\d{3}Z)(?:_ch(?P<ch>[1-4]))?(?P<ext>\.(?:png|csv|bin))$"
 )
 
 
@@ -27,6 +31,10 @@ class Capture:
         """ISO 8601 UTC time the capture was taken."""
         dt = datetime.strptime(self.id, "%Y%m%dT%H%M%S.%fZ").replace(tzinfo=timezone.utc)
         return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    @property
+    def sidecar(self) -> Path:
+        return self.path.with_suffix(".json")
 
     def to_dict(self, base_url: str | None = None) -> dict:
         out = {
@@ -50,9 +58,9 @@ def _new_id() -> str:
 class CaptureStore:
     """Files live in <root>/screenshots and <root>/waveforms. keep=0 means keep everything."""
 
-    def __init__(self, root: Path, keep_screenshots: int = 100, keep_waveforms: int = 100):
+    def __init__(self, root: Path, keep_screenshots: int = 100, keep_waveforms: int = 100, keep_exports: int = 10):
         self.root = Path(root)
-        self.keep = {"screenshots": keep_screenshots, "waveforms": keep_waveforms}
+        self.keep = {"screenshots": keep_screenshots, "waveforms": keep_waveforms, "exports": keep_exports}
         self._lock = threading.Lock()
 
     def dir(self, kind: str) -> Path:
@@ -63,20 +71,32 @@ class CaptureStore:
             raise PermissionError(f"capture folder {path} is not writable: {exc}") from exc
         return path
 
-    def _save(self, kind: str, data: bytes, channel: int | None = None) -> Capture:
-        prefix, ext = KINDS[kind]
+    def reserve(self, kind: str, ext: str, channel: int | None = None) -> Capture:
+        """Pick a new, unused timestamped name. Write to cap.path.with_name(name + '.tmp'),
+        then call commit(cap)."""
+        prefix, exts = KINDS[kind]
+        if ext not in exts:
+            raise ValueError(f"{kind} files must be one of {exts}")
         suffix = f"_ch{channel}" if channel is not None else ""
         with self._lock:
             folder = self.dir(kind)
             cap_id = _new_id()
-            while (folder / f"{prefix}_{cap_id}{suffix}{ext}").exists():
+            while any((folder / f"{prefix}_{cap_id}{suffix}{e}").exists() for e in exts):
                 cap_id = _new_id()  # same millisecond; try again
             path = folder / f"{prefix}_{cap_id}{suffix}{ext}"
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(path)
-            self._prune(kind)
+            path.with_name(path.name + ".tmp").touch()  # claim the name
         return Capture(kind, path.name, path, cap_id, channel)
+
+    def commit(self, cap: Capture) -> Capture:
+        with self._lock:
+            cap.path.with_name(cap.name + ".tmp").replace(cap.path)
+            self._prune(cap.kind)
+        return cap
+
+    def _save(self, kind: str, data: bytes, channel: int | None = None) -> Capture:
+        cap = self.reserve(kind, KINDS[kind][1][0], channel)
+        cap.path.with_name(cap.name + ".tmp").write_bytes(data)
+        return self.commit(cap)
 
     def save_screenshot(self, png: bytes) -> Capture:
         return self._save("screenshots", png)
@@ -92,7 +112,7 @@ class CaptureStore:
         caps = []
         for path in folder.iterdir():
             m = NAME_RE.match(path.name)
-            if m and KINDS[kind][0] == m["prefix"]:
+            if m and KINDS[kind][0] == m["prefix"] and m["ext"] in KINDS[kind][1]:
                 ch = int(m["ch"]) if m["ch"] else None
                 caps.append(Capture(kind, path.name, path, m["id"], ch))
         caps.sort(key=lambda c: c.id, reverse=True)
@@ -116,3 +136,4 @@ class CaptureStore:
             return
         for cap in self.list(kind)[keep:]:
             cap.path.unlink(missing_ok=True)
+            cap.sidecar.unlink(missing_ok=True)

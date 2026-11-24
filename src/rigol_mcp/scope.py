@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+from dataclasses import dataclass
 
 INVALID = 9.0e37  # the scope reports 9.9E37 when a measurement is not valid
 
@@ -73,18 +74,60 @@ class Scope:
         self.file.read(1)  # trailing newline
         return data
 
-    def waveform(self, channel: int) -> tuple[list[float], list[float], bytes]:
-        """On-screen waveform (NORMal mode, 1200 points): (times_s, volts, raw_bytes)."""
+    def preamble(self) -> Preamble:
+        return Preamble.parse(self.query(":WAV:PRE?"))
+
+    def waveform(self, channel: int) -> Waveform:
+        """On-screen waveform (NORMal mode, 1200 points)."""
         self.write(f":WAV:SOUR CHAN{channel}")
         self.write(":WAV:MODE NORM")
         self.write(":WAV:FORM BYTE")
-        preamble = self.query(":WAV:PRE?").split(",")
+        pre = self.preamble()
         raw = self.block(":WAV:DATA?")
-        xinc, xorig, xref, yinc, yorig, yref = map(float, preamble[4:10])
-        volts = [(b - yorig - yref) * yinc for b in raw]
-        times = [xorig + (i - xref) * xinc for i in range(len(raw))]
-        return times, volts, raw
+        return Waveform(pre, raw)
 
     def screenshot(self) -> bytes:
         """The display as PNG bytes."""
         return self.block(":DISP:DATA? ON,OFF,PNG")
+
+
+@dataclass
+class Preamble:
+    points: int
+    xinc: float
+    xorig: float
+    xref: float
+    yinc: float
+    yorig: float
+    yref: float
+
+    @classmethod
+    def parse(cls, text: str) -> Preamble:
+        f = text.split(",")
+        return cls(int(float(f[2])), *map(float, f[4:10]))
+
+    def volts(self, byte: int) -> float:
+        return (byte - self.yorig - self.yref) * self.yinc
+
+    def time(self, index: int) -> float:
+        return self.xorig + (index - self.xref) * self.xinc
+
+
+@dataclass
+class Waveform:
+    pre: Preamble
+    raw: bytes
+
+    @property
+    def volts(self) -> list[float]:
+        table = [self.pre.volts(b) for b in range(256)]
+        return [table[b] for b in self.raw]
+
+    @property
+    def times(self) -> list[float]:
+        return [self.pre.time(i) for i in range(len(self.raw))]
+
+    @property
+    def clipped(self) -> int:
+        """Samples at the ADC limits, i.e. off the top or bottom of the screen."""
+        return self.raw.count(0) + self.raw.count(255)

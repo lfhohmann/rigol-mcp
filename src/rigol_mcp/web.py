@@ -11,7 +11,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 
-from . import server
+from . import app, server  # noqa: F401  (server registers the tools)
 
 COOKIE = "rigol_token"
 PUBLIC_PATHS = {"/health"}
@@ -70,8 +70,9 @@ p.empty { text-align:center; color:var(--dim); }
 
 
 def _gallery_html() -> str:
-    caps = server.store.list("screenshots")
-    waves = server.store.list("waveforms", 20)
+    caps = app.store.list("screenshots")
+    waves = app.store.list("waveforms", 20)
+    exports = app.store.list("exports", 20)
     cards = []
     for i, cap in enumerate(caps):
         ts = html.escape(cap.timestamp.replace("T", " ").replace("Z", " UTC"))
@@ -85,7 +86,12 @@ def _gallery_html() -> str:
         f'<a href="waveforms/{html.escape(w.name)}" download>CH{w.channel} {html.escape(w.timestamp[11:19])}</a>'
         for w in waves
     )
-    keep = server.cfg.keep_screenshots or "all"
+    export_links = " · ".join(
+        f'<a href="exports/{html.escape(e.name)}" download>CH{e.channel} {html.escape(e.timestamp[11:19])} '
+        f'({e.path.stat().st_size / 1e6:.1f} MB)</a>'
+        for e in exports
+    )
+    keep = app.cfg.keep_screenshots or "all"
     body = "".join(cards) or '<p class="empty">No screenshots yet. Ask your agent to take one.</p>'
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Scope screenshots</title>
@@ -94,12 +100,13 @@ def _gallery_html() -> str:
 <a href="screenshots">refresh</a></header>
 <div class="grid">{body}</div>
 {f'<header style="margin-top:24px"><span>Recent waveforms: {wave_links}</span></header>' if waves else ''}
+{f'<header><span>Memory exports: {export_links}</span></header>' if exports else ''}
 </body></html>"""
 
 
 def build_app():
     """The ASGI app: MCP at /mcp, gallery at /screenshots, files, and /health."""
-    mcp = server.mcp
+    mcp = app.mcp
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(_request: Request) -> Response:
@@ -121,12 +128,23 @@ def build_app():
     async def waveform_file(request: Request) -> Response:
         return _file("waveforms", request.path_params["name"])
 
+    @mcp.custom_route("/exports/{name}", methods=["GET"])
+    async def export_file(request: Request) -> Response:
+        name = request.path_params["name"]
+        if name.endswith(".json"):  # metadata sidecar of an export
+            try:
+                cap = app.store.get("exports", name[:-5] + ".bin")
+            except FileNotFoundError:
+                return PlainTextResponse("not found\n", status_code=404)
+            return FileResponse(cap.sidecar, headers={"Cache-Control": "no-store"})
+        return _file("exports", name)
+
     return mcp.streamable_http_app()
 
 
 def _file(kind: str, name: str) -> Response:
     try:
-        cap = server.store.get(kind, name)  # only names that match the capture pattern
+        cap = app.store.get(kind, name)  # only names that match the capture pattern
     except FileNotFoundError:
         return PlainTextResponse("not found\n", status_code=404)
     return FileResponse(cap.path, headers={"Cache-Control": "no-store"})
@@ -141,10 +159,10 @@ def serve(bind: str, port: int) -> None:
             "RIGOL_MCP_TOKEN is not set. Set a token (e.g. `openssl rand -hex 24`), or set "
             "RIGOL_ALLOW_NO_AUTH=1 to run without authentication on a trusted network."
         )
-    server.mcp.settings.host = bind
-    server.mcp.settings.port = port
-    server.mcp.settings.stateless_http = True
+    app.mcp.settings.host = bind
+    app.mcp.settings.port = port
+    app.mcp.settings.stateless_http = True
     # FastMCP restricts Host headers to localhost by default. This server is meant to be
     # reached by LAN/VPN addresses and is protected by the token instead.
-    server.mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    app.mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     uvicorn.run(TokenAuth(build_app(), token or None), host=bind, port=port, log_level="info")

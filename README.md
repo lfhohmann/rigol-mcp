@@ -40,6 +40,7 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 - [Option 1: Local (stdio)](#option-1-local-stdio)
 - [Option 2: Docker (HTTP bridge)](#option-2-docker-http-bridge)
 - [Option 3: HTTP without Docker](#option-3-http-without-docker)
+- [Capturing an event and the full memory](#capturing-an-event-and-the-full-memory)
 - [Screenshot history and gallery](#screenshot-history-and-gallery)
 - [Configuration](#configuration)
 - [Security](#security)
@@ -50,15 +51,32 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 
 | Tool | What it does | Touches the scope |
 |---|---|---|
-| `scope_status` | Model, trigger, timebase, and per channel: V/div, offset, coupling, Vpp, Vavg, Vrms, frequency | reads |
-| `scope_measure` | Any of the 20 built-in measurements on one channel (rise time, duty cycle, ...) | reads |
+| **Reading** | | |
+| `scope_status` | Model, run state, trigger, timebase, memory depth; per channel V/div, Vpp, mean, RMS, frequency (about 1 s) | reads |
+| `scope_measure` | Any of the scope's 37 built-in measurements on one channel (rise time, duty cycle, ...) | reads |
+| `scope_measure_between` | Delay and phase between two channels (rising or falling edges) | reads |
+| `scope_measure_stats` | Repeats a measurement N times: mean, min, max, stdev (jitter, drift) | reads |
 | `scope_waveform` | The 1200 on-screen samples: stats, clipping warning, optional full CSV | reads |
+| `scope_export_memory` | The **full acquisition memory** (up to 24M points) streamed to a `.bin` or `.csv` file | reads* |
 | `scope_screenshot` | Captures the display as a PNG (the agent sees the image) and saves it | reads |
+| `scope_query` | Any read-only SCPI query (must end in `?`) | reads |
+| **History** | | |
 | `scope_screenshot_history` | Lists saved screenshots, newest first | no |
 | `scope_screenshot_get` | Returns a saved screenshot (`latest` or by id) | no |
-| `scope_waveform_history` | Lists saved waveform CSVs | no |
-| `scope_query` | Any read-only SCPI query (must end in `?`) | reads |
-| `scope_write` | Changes a setting (V/div, timebase, trigger, run/stop, ...) | **writes** |
+| `scope_waveform_history` | Lists saved waveform CSVs or memory exports | no |
+| **Control** | | |
+| `scope_run_control` | Run, stop, single, autoscale, force trigger, clear | **writes** |
+| `scope_set_channel` | On/off, V/div, offset, coupling, probe ratio, 20 MHz limit, invert | **writes** |
+| `scope_set_timebase` | Time/div, trigger position, main/XY/roll mode | **writes** |
+| `scope_set_trigger` | Edge trigger: source, level, slope, sweep (auto/normal/single), coupling, holdoff | **writes** |
+| `scope_set_acquire` | Normal, averaging, peak detect, high-res; memory depth | **writes** |
+| `scope_capture` | Arms a single trigger, waits for the event, returns a screenshot and per-channel summary | **writes** |
+| `scope_write` | Any other SCPI setting command | **writes** |
+
+\* `scope_export_memory` needs the scope stopped. With `stop=true` it stops the scope itself.
+
+Every setter reads back the values the scope actually applied (it rounds to the steps it
+supports) and returns the scope's error queue, so the agent can see when a value was refused.
 
 Invalid measurements (the scope's `9.9E37` or `measure error!`, e.g. the frequency of a DC
 signal) come back as `null` instead of a misleading number.
@@ -176,6 +194,31 @@ RIGOL_HOST=192.168.1.50 RIGOL_MCP_TOKEN=<your-token> RIGOL_PUBLIC_URL=http://192
   uvx --from git+https://github.com/lfhohmann/rigol-mcp rigol-mcp --http --port 8790
 ```
 
+## Capturing an event and the full memory
+
+A typical flow for a one-off event, such as a power-on glitch or a relay switching:
+
+1. Ask *"capture the next rising edge on CH2 at 1.5 V"*. The agent calls `scope_capture` with
+   `source="CHAN2", level_v=1.5, slope="POS"`, which arms a single trigger and waits (10 s by
+   default, up to 120 s).
+2. Cause the event. The agent gets the screenshot and a per-channel summary as soon as the
+   scope triggers.
+3. Ask *"save the full record of CH1"*. `scope_export_memory` reads the whole acquisition
+   memory (not just the 1200 points on screen) in 250k-point chunks straight to disk. It
+   returns stats, a frequency estimate and a min/max preview, so the agent never has to load
+   millions of points.
+
+Memory exports go to `<data dir>/exports/`, with a `.json` file next to each one that holds
+the scaling (`volts = (byte - yorigin - yreference) * yincrement`). The last
+`RIGOL_KEEP_EXPORTS` (default 10) are kept. The DS1000Z sends about 0.5 M points/s (measured
+on a DS1104Z), so 3M points take ~6 s and 24M points ~50 s, and other calls wait meanwhile.
+
+> **Why the full memory matters.** The 1200-point screen data keeps the peaks of narrow
+> pulses when it shrinks millions of points down to 1200, and the scope's own measurements
+> use that screen data too. On a bursty signal tested here, the screen data put 30% of
+> points above 0.3 V while the full record had 0.21%. Screen-based RMS read 0.317 V; the
+> true RMS from the full record was 0.034 V.
+
 ## Screenshot history and gallery
 
 - Every `scope_screenshot` call saves a PNG named with its UTC time, e.g.
@@ -192,7 +235,8 @@ RIGOL_HOST=192.168.1.50 RIGOL_MCP_TOKEN=<your-token> RIGOL_PUBLIC_URL=http://192
   ![The screenshot gallery: newest first, with UTC timestamps and download links](docs/images/gallery.png)
 
   The token in the URL is stored as a cookie, so later visits to `/screenshots` work without it.
-  Single files are at `/screenshots/<file name>` and `/waveforms/<file name>`, and
+  Single files are at `/screenshots/<file name>`, `/waveforms/<file name>` and
+  `/exports/<file name>` (plus `.json` for an export's metadata), and
   `/screenshots/latest` always gives the newest screenshot.
 
 ## Configuration
@@ -207,7 +251,8 @@ All settings are environment variables. In Docker they go in `.env`.
 | `RIGOL_DATA_DIR` | `~/.local/share/rigol-mcp` (`/data` in Docker) | Where captures are saved |
 | `RIGOL_KEEP_SCREENSHOTS` | `100` | Screenshots to keep; `0` keeps all |
 | `RIGOL_KEEP_WAVEFORMS` | `100` | Waveform CSVs to keep; `0` keeps all |
-| `RIGOL_READ_ONLY` | off | `1` blocks `scope_write` |
+| `RIGOL_KEEP_EXPORTS` | `10` | Full-memory exports to keep; `0` keeps all |
+| `RIGOL_READ_ONLY` | off | `1` blocks every tool that changes the scope |
 | `RIGOL_TRANSPORT` | `stdio` | `http` is the same as `--http` |
 | `RIGOL_HTTP_HOST` | `0.0.0.0` | HTTP bind address (or `--bind`) |
 | `RIGOL_HTTP_PORT` | `8790` | HTTP port (or `--port`) |
@@ -218,8 +263,9 @@ All settings are environment variables. In Docker they go in `.env`.
 
 ## Security
 
-- **Writes are explicit.** Only `scope_write` changes settings, and its description tells agents
-  to use it only when you ask. `*RST` is blocked. `RIGOL_READ_ONLY=1` turns writes off completely.
+- **Writes are explicit.** Only the control tools change settings, and their descriptions tell
+  agents to use them only when you ask. `*RST` is blocked. `RIGOL_READ_ONLY=1` turns every
+  write off, including `scope_capture` and `scope_export_memory(stop=true)`.
   Real circuits may be connected to the probes, so keep it that way.
 - **HTTP mode needs a token.** It's checked in constant time on every request except `/health`.
 - **The traffic is plain HTTP.** On an untrusted network, put the server behind a VPN
@@ -233,6 +279,7 @@ All settings are environment variables. In Docker they go in `.env`.
 |---|---|
 | `cannot connect to scope` | Wrong IP, or the scope's LAN is off. Check **Utility > IO Setting**, then run the `nc` test above. |
 | Works, then hangs or times out | Another program (the scope's web page, UltraScope, a second server) is connected. Use one client at a time. |
+| Scope stops answering, front panel still works | Its network command service hung (it can happen after a burst of commands or two clients at once). Restarting LAN in **Utility > IO Setting** may not help; power-cycle the scope. Settings are kept. |
 | A measurement is `null` | The scope can't measure it: no edges, or the signal is off screen. Look at the screenshot. |
 | `clipped_samples > 0` | The trace goes off screen, so min, max and Vpp are wrong. Change V/div or offset. |
 | HTTP clients get 401 | Missing or wrong `Authorization: Bearer <token>` header. |
