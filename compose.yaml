@@ -1,7 +1,9 @@
+# rigol-mcp: HTTP bridge between MCP clients and a Rigol DS1000Z oscilloscope.
+# Usage: put this file and .env (from .env.example) in a folder, then:
+#   mkdir -p data && docker compose up -d
 services:
   rigol-mcp:
-    build: .
-    image: rigol-mcp:local
+    image: ghcr.io/lfhohmann/rigol-mcp:latest
     container_name: rigol-mcp
     restart: unless-stopped
     # Files in ./data are created as this user. Set UID/GID in .env (run `id -u` / `id -g`).

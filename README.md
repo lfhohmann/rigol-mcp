@@ -15,6 +15,21 @@ and changes settings when you ask.
 - **Careful by default.** Settings change only through one explicit tool. Reset is blocked, and
   a read-only mode is available.
 
+![Claude Code taking a scope screenshot and describing CH1 and CH2](docs/images/claude-code-example.png)
+
+*Claude Code asked to "take a screenshot of the scope and tell me what's on CH1 and CH2". It reads
+the screen and the measurements, then explains the event: a 24 V signal switching off, and a
+logic signal responding 5.86 ms later.*
+
+### Things to ask
+
+- "Take a screenshot of the scope and tell me what's on each channel."
+- "What's the frequency and duty cycle on CH1?"
+- "Measure the delay between the CH2 falling edge and the CH1 rising edge."
+- "Download CH1 and check how much noise is on the high level."
+- "Show me the screenshot from 10 minutes ago and compare it with the scope now."
+- "Set CH1 to 1 V/div and arm a single trigger on CH2's rising edge." *(changes settings)*
+
 Tested on a DS1104Z (firmware 00.04.04.SP3). Other DS1000Z and MSO1000Z models (DS1054Z,
 DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work. Reports welcome.
 
@@ -108,12 +123,15 @@ and takes turns for everyone. It serves MCP over HTTP with a token and hosts the
  other MCP clients ────┘     :8790/mcp       (gallery, history)
 ```
 
-1. Get the code and create your settings file:
+The prebuilt image `ghcr.io/lfhohmann/rigol-mcp` runs on amd64 and arm64 (including the
+Raspberry Pi 4 and 5). You don't need to clone the repo.
+
+1. Make a folder with the compose file and the settings template:
 
    ```bash
-   git clone https://github.com/lfhohmann/rigol-mcp.git
-   cd rigol-mcp
-   cp .env.example .env
+   mkdir rigol-mcp && cd rigol-mcp
+   curl -fsSLO https://raw.githubusercontent.com/lfhohmann/rigol-mcp/main/compose.yaml
+   curl -fsSL https://raw.githubusercontent.com/lfhohmann/rigol-mcp/main/.env.example -o .env
    ```
 
 2. Edit `.env`: set `RIGOL_HOST`, a token (`openssl rand -hex 24`), and `RIGOL_PUBLIC_URL`
@@ -124,11 +142,12 @@ and takes turns for everyone. It serves MCP over HTTP with a token and hosts the
 
    ```bash
    mkdir -p data
-   docker compose up -d --build
+   docker compose up -d
    ```
 
-   To use the prebuilt image instead of building it, change `build: .` and `image:` in
-   `compose.yaml` to `image: ghcr.io/lfhohmann/rigol-mcp:latest`, then run `docker compose up -d`.
+   To update later, run `docker compose pull && docker compose up -d`. To build from source
+   instead, clone the repo and run
+   `docker compose -f compose.yaml -f compose.build.yaml up -d --build`.
 
 4. Check that it's up (no token needed):
 
@@ -169,6 +188,8 @@ RIGOL_HOST=192.168.1.50 RIGOL_MCP_TOKEN=<your-token> RIGOL_PUBLIC_URL=http://192
   ```text
   http://192.168.1.10:8790/screenshots?token=<your-token>
   ```
+
+  ![The screenshot gallery: newest first, with UTC timestamps and download links](docs/images/gallery.png)
 
   The token in the URL is stored as a cookie, so later visits to `/screenshots` work without it.
   Single files are at `/screenshots/<file name>` and `/waveforms/<file name>`, and
