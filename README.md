@@ -75,6 +75,10 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 
 \* `scope_export_memory` needs the scope stopped. With `stop=true` it stops the scope itself.
 
+**Measurements show up on the scope.** When asked for a measurement, the DS1000Z also adds
+it to the measurement bar at the bottom of its screen (it keeps the last 5). The reading
+tools change nothing else.
+
 Every setter reads back the values the scope actually applied (it rounds to the steps it
 supports) and returns the scope's error queue, so the agent can see when a value was refused.
 
@@ -200,7 +204,8 @@ A typical flow for a one-off event, such as a power-on glitch or a relay switchi
 
 1. Ask *"capture the next rising edge on CH2 at 1.5 V"*. The agent calls `scope_capture` with
    `source="CHAN2", level_v=1.5, slope="POS"`, which arms a single trigger and waits (10 s by
-   default, up to 120 s).
+   default, up to 120 s). Afterwards the scope stays stopped on the capture, and the trigger
+   sweep goes back to what it was (e.g. NORM), so **RUN** resumes as before.
 2. Cause the event. The agent gets the screenshot and a per-channel summary as soon as the
    scope triggers.
 3. Ask *"save the full record of CH1"*. `scope_export_memory` reads the whole acquisition
@@ -279,6 +284,7 @@ All settings are environment variables. In Docker they go in `.env`.
 |---|---|
 | `cannot connect to scope` | Wrong IP, or the scope's LAN is off. Check **Utility > IO Setting**, then run the `nc` test above. |
 | Works, then hangs or times out | Another program (the scope's web page, UltraScope, a second server) is connected. Use one client at a time. |
+| The scope beeps | Its beeper sounds when a command is rejected (e.g. `-220 Parameter error`). The `error` field of each control tool shows why. Turn it off in **Utility > Sound** or with `scope_write(":SYST:BEEP OFF")`. |
 | Scope stops answering, front panel still works | Its network command service hung (it can happen after a burst of commands or two clients at once). Restarting LAN in **Utility > IO Setting** may not help; power-cycle the scope. Settings are kept. |
 | A measurement is `null` | The scope can't measure it: no edges, or the signal is off screen. Look at the screenshot. |
 | `clipped_samples > 0` | The trace goes off screen, so min, max and Vpp are wrong. Change V/div or offset. |

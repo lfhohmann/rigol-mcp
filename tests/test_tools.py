@@ -143,10 +143,21 @@ def test_capture_triggers_and_returns_screenshot(fake):
     assert ":SING" in fake.writes and ":TRIG:EDG:LEV 1" in fake.writes
 
 
+def test_capture_restores_sweep_and_stays_stopped(fake):
+    fake.state[":TRIG:SWE"] = "NORM"
+    _, meta = scope_capture(timeout_s=5)
+    meta = json.loads(meta)
+    assert meta["trigger_sweep"] == "NORM" and meta["trigger_status"] == "STOP"
+    fake.state[":TRIG:SWE"] = "AUTO"
+    out = scope_capture(timeout_s=5, include_screenshot=False, restore_sweep=False)
+    assert out["trigger_sweep"] == "SING"
+
+
 def test_capture_timeout(fake):
     fake.trigger_after = None  # the event never happens
     out = scope_capture(timeout_s=0.6, include_screenshot=False)
     assert out["triggered"] is False and out["trigger_status"] == "WAIT"
+    assert out["previous_sweep"] == "AUTO" and "scope_run_control" in out["note"]
 
 
 def test_write_guards(fake):

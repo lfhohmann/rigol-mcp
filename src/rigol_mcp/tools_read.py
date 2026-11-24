@@ -74,7 +74,9 @@ def scope_measure(channel: int, items: list[str] | None = None) -> dict:
     items: any of VMAX VMIN VPP VTOP VBASE VAMP VAVG VRMS OVER PRES MAR MPAR PER FREQ
     RTIM FTIM PWID NWID PDUT NDUT TVMAX TVMIN PSLEWRATE NSLEWRATE VUPper VMID VLOWer
     VARIance PVRMS PPULses NPULses PEDGes NEDGes. Default: a common set. Times are in
-    seconds, duty cycles are fractions (0.25 = 25%). Invalid results are null."""
+    seconds, duty cycles are fractions (0.25 = 25%). Invalid results are null.
+    Side effect: the DS1000Z also adds each queried item to the measurement bar at the
+    bottom of its screen (it keeps the last 5). Nothing else changes."""
     ch = app.check_channel(channel)
     items = items or DEFAULT_MEASUREMENTS
     with app.scope_lock, app.connect() as s:
@@ -90,7 +92,11 @@ def scope_measure_between(
     """Measure timing between two channels with the scope's built-in measurements.
     RDEL / FDEL: delay from A's rising (falling) edge to B's rising (falling) edge, seconds.
     RPH / FPH: phase between the rising (falling) edges, degrees. Default: all four.
-    Invalid results (e.g. no matching edge on screen) are null."""
+    Both channels need the same kind of edge on screen: RDEL needs a rising edge on A and
+    on B. If A only falls and B only rises, use scope_waveform or scope_export_memory and
+    compare edge times instead. Invalid results are null.
+    Side effect: the DS1000Z also adds each queried item to the measurement bar at the
+    bottom of its screen (it keeps the last 5). Nothing else changes."""
     a, b = app.check_channel(channel_a), app.check_channel(channel_b)
     items = items or list(PAIR_ITEMS)
     out = {}
@@ -106,7 +112,10 @@ def scope_measure_between(
 def scope_measure_stats(channel: int, item: str = "VPP", samples: int = 10, interval_s: float = 0.0) -> dict:
     """Repeat one built-in measurement several times and return statistics (mean, min,
     max, stdev). Useful for jitter, drift and noisy signals. samples: 2-100. Each reading
-    takes ~40-400 ms on the scope, so 10 samples take a few seconds. Read-only."""
+    takes ~40-400 ms on the scope, so 10 samples take a few seconds. Values only vary while
+    the scope keeps acquiring (running); on a stopped screen they are all identical.
+    Side effect: the DS1000Z also adds each queried item to the measurement bar at the
+    bottom of its screen (it keeps the last 5). Nothing else changes."""
     ch = app.check_channel(channel)
     if not 2 <= samples <= 100:
         raise ValueError("samples must be 2-100")

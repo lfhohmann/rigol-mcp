@@ -102,6 +102,7 @@ class FakeScope:
             self.run_state = "STOP"
         elif head == ":SING":
             self.run_state, self.armed_at = "SINGLE", time.monotonic()
+            self.state[":TRIG:SWE"] = "SING"  # like the real scope
         elif value:
             if head.endswith((":DISP", ":INV")):
                 value = "1" if value in ("ON", "1") else "0"

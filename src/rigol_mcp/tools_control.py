@@ -230,12 +230,16 @@ def scope_capture(
     level_v: float | None = None,
     slope: Literal["POS", "NEG", "RFAL"] | None = None,
     include_screenshot: bool = True,
+    restore_sweep: bool = True,
 ):
     """Single-shot capture: optionally set up an edge trigger, arm SINGLE, wait for the
     trigger (up to timeout_s, max 120), then return a screenshot and a summary of each
-    channel (Vpp, mean, RMS, frequency estimate). CHANGES THE SCOPE (it ends up stopped):
-    only when the user asks. Tell the user to cause the event after calling, or set a
-    timeout long enough for them to do it. On timeout the scope stays armed."""
+    channel (Vpp, mean, RMS, frequency estimate). CHANGES THE SCOPE: only when the user
+    asks. After the trigger the scope stays stopped on the capture, and (restore_sweep)
+    the trigger sweep goes back to what it was (e.g. NORM or AUTO), so pressing RUN
+    resumes as before. Trigger settings passed here (source, level, slope) stay changed.
+    Tell the user to cause the event after calling, or set a timeout long enough for them
+    to do it. On timeout the scope stays armed in SINGLE."""
     app.require_writes()
     timeout_s = max(0.5, min(float(timeout_s), 120.0))
     setup = [":TRIG:MODE EDGE"] if any(v is not None for v in (source, level_v, slope)) else []
@@ -247,6 +251,7 @@ def scope_capture(
         setup.append(f":TRIG:EDG:LEV {level_v:g}")
 
     with app.scope_lock, app.connect(timeout=max(app.cfg.timeout, 15.0)) as s:
+        previous_sweep = s.query(":TRIG:SWE?")
         error = _apply(s, setup + [":SING"])
         armed_at = time.monotonic()
         # Wait for the scope to leave STOP (armed), then for it to stop again (triggered).
@@ -260,7 +265,9 @@ def scope_capture(
         waited = round(time.monotonic() - armed_at, 2)
         if status != "STOP":
             return {"triggered": False, "waited_s": waited, "trigger_status": status, "error": error,
-                    "note": "no trigger within the timeout; the scope is still armed (SINGLE)"}
+                    "previous_sweep": previous_sweep,
+                    "note": "no trigger within the timeout; the scope is still armed (SINGLE). "
+                            f"To give up: scope_set_trigger(sweep='{previous_sweep[:4]}') and scope_run_control('run')."}
 
         chans = channels or [ch for ch in range(1, 5) if s.query(f":CHAN{ch}:DISP?") == "1"]
         summary = {}
@@ -269,9 +276,16 @@ def scope_capture(
             info = waveform_summary(s.waveform(ch))
             summary[f"CH{ch}"] = {k: info[k] for k in ("vpp", "vmin", "vmax", "mean", "rms", "freq_hz", "clipped_samples")}
         png = s.screenshot() if include_screenshot else None
+        sweep_now = s.query(":TRIG:SWE?")
+        if restore_sweep and previous_sweep and sweep_now != previous_sweep:
+            error = _apply(s, [f":TRIG:SWE {previous_sweep}"])
+            sweep_now = s.query(":TRIG:SWE?")
+        run_state = s.query(":TRIG:STAT?")
 
     result = {"triggered": True, "waited_s": waited, "channels": summary, "error": error,
-              "next": "the scope is stopped on this capture; scope_export_memory can save the full record"}
+              "trigger_sweep": sweep_now, "trigger_status": run_state,
+              "next": "the scope is stopped on this capture; scope_export_memory can save the full record, "
+                      "scope_run_control('run') resumes"}
     if png is None:
         return result
     cap = app.store.save_screenshot(png)
