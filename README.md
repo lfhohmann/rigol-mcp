@@ -148,6 +148,12 @@ and takes turns for everyone. It serves MCP over HTTP with a token and hosts the
 The prebuilt image `ghcr.io/lfhohmann/rigol-mcp` runs on amd64 and arm64 (including the
 Raspberry Pi 4 and 5). You don't need to clone the repo.
 
+| Tag | Meaning |
+|---|---|
+| `latest` | newest release (recommended) |
+| `0.2.1`, `0.2` | a specific release, or the newest patch of 0.2 |
+| `edge` | newest commit on `main`, untested on hardware |
+
 1. Make a folder with the compose file and the settings template:
 
    ```bash
