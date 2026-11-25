@@ -98,7 +98,7 @@ def scope_setup_save(name: str | None = None) -> dict:
     return _save(settings, name, idn)
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_setup_list() -> dict:
     """List saved setups, newest first."""
     files = sorted(_setups_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -112,13 +112,15 @@ def scope_setup_list() -> dict:
     return {"setups": out}
 
 
-@app.tool()
-def scope_setup_restore(name: str = "latest", dry_run: bool = False) -> dict:
+@app.tool(kind=lambda kw: "read" if kw.get("dry_run") else "write")
+def scope_setup_restore(name: str = "latest", dry_run: bool = False, ignore_other_sessions: bool = False) -> dict:
     """Put the scope back to a saved setup ('latest' or a name from scope_setup_list).
     Only settings that differ are sent, one at a time and each confirmed, in an order the
     scope accepts. The current state is saved first as 'auto-before-restore', so a restore
     can be undone. dry_run=true only lists the differences (read-only). CHANGES THE SCOPE
-    unless dry_run: only when the user asks."""
+    unless dry_run: only when the user asks.
+    ignore_other_sessions: Only set true after YOUR USER agreed to go ahead although another
+    session is using the scope; otherwise leave false and the call is refused while one is."""
     saved = _load(name)
     with app.scope_lock, app.connect() as s:
         current = _read_settings(s)
@@ -140,7 +142,7 @@ def scope_setup_restore(name: str = "latest", dry_run: bool = False) -> dict:
     return result
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_audit_log(limit: int = 30) -> dict:
     """Show the most recent setting changes made through this server, newest first: UTC
     time, client (IP and program for HTTP clients, 'stdio' otherwise), tool, the SCPI

@@ -49,6 +49,8 @@ class FakeScope:
             ":CHAN1:PROB": "1.000000e+00", ":CHAN1:BWL": "OFF", ":CHAN1:INV": "0",
             ":WAV:MODE": "NORM", ":WAV:STAR": "1", ":WAV:STOP": "1200", ":WAV:SOUR": "CHAN1",
         }
+        self.chunk_delay = 0.0  # seconds per RAW chunk (to simulate a slow transfer)
+        self.query_log: list[str] = []
         self.vary = False  # make VPP change on every reading (for logging tests)
         self.counter = 0
         self.run_state = "RUN"  # RUN | SINGLE | STOP
@@ -112,6 +114,7 @@ class FakeScope:
         return None
 
     def query(self, cmd: str) -> bytes:
+        self.query_log.append(cmd)
         if cmd.startswith(":MEAS:ITEM?"):
             args = cmd.split(None, 1)[1].split(",")
             if args[0].upper() == "RTIM":
@@ -124,6 +127,7 @@ class FakeScope:
             if self.state[":WAV:MODE"] == "RAW":
                 start, stop = int(self.state[":WAV:STAR"]), int(self.state[":WAV:STOP"])
                 stop = min(stop, self.memory_depth)
+                time.sleep(self.chunk_delay)
                 return block(square(start - 1, stop - start + 1))
             return block(square(0, 1200))
         if cmd.startswith(":DISP:DATA?"):

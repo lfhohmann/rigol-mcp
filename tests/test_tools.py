@@ -107,7 +107,7 @@ def test_screenshot_history_and_retention(fake):
 
 
 def test_query_guard(fake):
-    assert scope_query(":TIM:SCAL?") == "1.000000e-03"
+    assert scope_query(":TIM:SCAL?")["reply"] == "1.000000e-03"
     with pytest.raises(ValueError):
         scope_query(":TIM:SCAL 1")
 
@@ -163,7 +163,7 @@ def test_capture_timeout(fake):
 def test_write_guards(fake):
     with pytest.raises(ValueError):
         scope_write("*RST")
-    assert scope_write(":MATH:DISP ON") == '0,"No error"'
+    assert scope_write(":MATH:DISP ON")["error"] == '0,"No error"'
 
 
 def test_read_only_blocks_every_write(fake):

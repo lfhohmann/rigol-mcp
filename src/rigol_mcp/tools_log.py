@@ -54,6 +54,7 @@ class LogJob:
     error: str | None = None
     last: dict | None = None
     columns: list[Column] = field(default_factory=list)
+    session: object = None  # sessions.Session that started it; kept "active" while logging
 
     def info(self) -> dict:
         elapsed = time.monotonic() - self.started
@@ -99,6 +100,8 @@ def _run(job: LogJob) -> None:
                     job.state = "failed"
                     return
                 values = [None] * len(job.measurements)
+            if job.session is not None:
+                job.session.last_activity = time.time()
             elapsed = round(time.monotonic() - job.started, 3)
             writer.writerow([stamp, elapsed] + ["" if v is None else v for v in values])
             fh.flush()
@@ -159,14 +162,17 @@ def scope_log_start(
         tmp = cap.path.with_name(cap.name + ".tmp")
         tmp.write_text(",".join(["timestamp_utc", "elapsed_s"] + names) + "\n")
         app.store.commit(cap)
-        job = LogJob(cap, measurements, interval_s, duration_s, columns=[Column(n) for n in names])
+        from .guard import current_session
+
+        job = LogJob(cap, measurements, interval_s, duration_s, columns=[Column(n) for n in names],
+                     session=current_session())
         _jobs[cap.id] = job
     threading.Thread(target=_run, args=(job,), daemon=True, name=f"log-{cap.id}").start()
     return {"started": True, **job.info(),
             "next": "scope_log_status(id) for progress, scope_log_stop(id) to end early"}
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_log_status(id: str = "latest", recent_rows: int = 5) -> dict:
     """Progress of a measurement log ('latest' or an id): state, rows, last values and
     min/max/mean per column so far, plus the newest rows."""
@@ -178,7 +184,7 @@ def scope_log_status(id: str = "latest", recent_rows: int = 5) -> dict:
     return out
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_log_stop(id: str = "latest") -> dict:
     """Stop a running measurement log ('latest' or an id). The CSV keeps what was logged."""
     job = _get(id)

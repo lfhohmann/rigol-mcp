@@ -41,6 +41,7 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 - [Option 2: Docker (HTTP bridge)](#option-2-docker-http-bridge)
 - [Option 3: HTTP without Docker](#option-3-http-without-docker)
 - [Capturing an event and the full memory](#capturing-an-event-and-the-full-memory)
+- [Several agents on one scope](#several-agents-on-one-scope)
 - [Setups, logging and the audit log](#setups-logging-and-the-audit-log)
 - [Screenshot history and gallery](#screenshot-history-and-gallery)
 - [Configuration](#configuration)
@@ -81,6 +82,10 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 | `scope_log_status` | Progress, last values and min/max/mean of a running log | no |
 | `scope_log_stop` | Stops a log early | no |
 | `scope_audit_log` | Recent setting changes: time, client, tool, SCPI commands, scope reply | no |
+| **Sharing the scope** | | |
+| `scope_claim` | Tells other agents you're using the scope and why (1-480 min) | no |
+| `scope_release` | Ends your claim | no |
+| `scope_sessions` | Who is using the scope: name, purpose, last call, last change | no |
 
 \* `scope_export_memory` needs the scope stopped. With `stop=true` it stops the scope itself.
 Measurement tools (`scope_measure*`, `scope_log_start`) add their items to the scope's on-screen
@@ -255,6 +260,29 @@ on a DS1104Z), so 3M points take ~6 s and 24M points ~50 s, and other calls wait
 > points above 0.3 V while the full record had 0.21%. Screen-based RMS read 0.317 V; the
 > true RMS from the full record was 0.034 V.
 
+## Several agents on one scope
+
+The HTTP bridge is built for several agents at once. Each MCP connection is a **session**;
+name it with an `X-Agent` header so others know who it is:
+
+```bash
+claude mcp add --scope user --transport http rigol http://192.168.1.10:8790/mcp \
+  --header "Authorization: Bearer <your-token>" --header "X-Agent: lab-laptop"
+```
+
+| Situation | What happens |
+|---|---|
+| Two agents read at the same moment | The scope is read once; the second result is marked `"shared"` with its age. `fresh=true` forces a new reading. Any write clears shared results |
+| An agent reads during a long export or capture | It waits at most ~0.5 s: long jobs hand the scope over between chunks and polls |
+| Agent B changes a setting while agent A is active | **Refused, nothing sent.** B is told who is using the scope, for what (A's `scope_claim` purpose) and since when, and to ask its user. If the user agrees, B retries with `ignore_other_sessions=true` |
+| B goes ahead anyway | It works, and A is told on its next call |
+| Something changed since an agent's last call | Its next result lists the change and who made it, e.g. *"CH1 V/div changed 0.5 -> 2 since your last call, by lab-laptop via scope_set_channel"*, or *"not through this server (front panel or another program)"* |
+
+A session is **active** while it holds a claim, or for 5 minutes after it last used the scope
+(`RIGOL_INTERLOCK_WINDOW_S`). Reads are never refused. Notices ride along on the next tool
+result; nothing is pushed. In stdio mode there is only one session, but change detection still
+reports front-panel changes.
+
 ## Setups, logging and the audit log
 
 - **Setups.** Ask *"save the scope setup as bench"* before an experiment and *"restore bench"*
@@ -270,9 +298,9 @@ on a DS1104Z), so 3M points take ~6 s and 24M points ~50 s, and other calls wait
   `<data dir>/audit.jsonl` with the UTC time, the client (IP address and program for HTTP
   clients), the tool, the exact SCPI commands and the scope's reply. `scope_audit_log` and the
   gallery show the most recent ones.
-- **Long calls don't block the bridge.** Tools run in worker threads, so a 50 s memory export
-  or a capture waiting for a trigger doesn't stop other agents from listing screenshots or
-  checking a log; calls that need the scope simply wait their turn.
+- **Long calls don't block the bridge.** Tools run in worker threads and the server keeps one
+  persistent connection to the scope, handed out first come, first served. A 50 s memory
+  export or a capture waiting for a trigger gives other calls a turn every ~0.5 s.
 
 ## Screenshot history and gallery
 
@@ -314,6 +342,10 @@ All settings are environment variables. In Docker they go in `.env`.
 | `RIGOL_HTTP_PORT` | `8790` | HTTP port (or `--port`) |
 | `RIGOL_MCP_TOKEN` | (required for HTTP) | Token clients must send |
 | `RIGOL_ALLOW_NO_AUTH` | off | `1` allows HTTP without a token (trusted networks only) |
+| `RIGOL_INTERLOCK` | `on` | `off` never refuses writes from other sessions (notices still work) |
+| `RIGOL_INTERLOCK_WINDOW_S` | `300` | How long after its last call a session counts as active |
+| `RIGOL_SHARE_WINDOW_S` | `2` | How old a shared read may be; `0` turns sharing off |
+| `RIGOL_CHANGE_DETECTION` | `on` | `off` skips the settings check around each call (saves ~80 ms per call) |
 | `RIGOL_PUBLIC_URL` | none | Base URL used in links to screenshots and the gallery |
 | `RIGOL_HOST_PORT` | `8790` | Docker only: port published on the host |
 

@@ -239,7 +239,9 @@ def serve(bind: str, port: int) -> None:
         )
     app.mcp.settings.host = bind
     app.mcp.settings.port = port
-    app.mcp.settings.stateless_http = True
+    # Stateful sessions: every client connection gets an Mcp-Session-Id, which the interlock
+    # and change detection use to tell agents apart.
+    app.mcp.settings.stateless_http = False
     # FastMCP restricts Host headers to localhost by default. This server is meant to be
     # reached by LAN/VPN addresses and is protected by the token instead.
     app.mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)

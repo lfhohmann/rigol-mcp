@@ -26,12 +26,13 @@ PAIR_ITEMS = {
 }
 
 
-@app.tool()
-def scope_status() -> dict:
+@app.tool(share=True)
+def scope_status(fresh: bool = False) -> dict:
     """Overview of the scope: model, run state, trigger, timebase, sample rate, memory depth,
     and for each channel that is on: V/div, offset, coupling, probe, plus Vpp, Vmin, Vmax,
     mean, RMS and an estimated frequency computed from the on-screen waveform (fast; use
-    scope_measure for the scope's own measurements). Invalid values are null. Start here."""
+    scope_measure for the scope's own measurements). Invalid values are null. Start here.
+    fresh: true = always take a new reading instead of reusing an identical one from the last ~2 s."""
     with app.scope_lock, app.connect() as s:
         out = {
             "idn": s.query("*IDN?"),
@@ -68,15 +69,16 @@ def scope_status() -> dict:
         return out
 
 
-@app.tool()
-def scope_measure(channel: int, items: list[str] | None = None) -> dict:
+@app.tool(share=True)
+def scope_measure(channel: int, items: list[str] | None = None, fresh: bool = False) -> dict:
     """Run the scope's built-in measurements on one channel (1-4). Each takes ~40-400 ms.
     items: any of VMAX VMIN VPP VTOP VBASE VAMP VAVG VRMS OVER PRES MAR MPAR PER FREQ
     RTIM FTIM PWID NWID PDUT NDUT TVMAX TVMIN PSLEWRATE NSLEWRATE VUPper VMID VLOWer
     VARIance PVRMS PPULses NPULses PEDGes NEDGes. Default: a common set. Times are in
     seconds, duty cycles are fractions (0.25 = 25%). Invalid results are null.
     Side effect: the DS1000Z also adds each queried item to the measurement bar at the
-    bottom of its screen (it keeps the last 5). Nothing else changes."""
+    bottom of its screen (it keeps the last 5). Nothing else changes.
+    fresh: true = always take a new reading instead of reusing an identical one from the last ~2 s."""
     ch = app.check_channel(channel)
     items = items or DEFAULT_MEASUREMENTS
     with app.scope_lock, app.connect() as s:
@@ -143,13 +145,14 @@ def scope_measure_stats(channel: int, item: str = "VPP", samples: int = 10, inte
     return out
 
 
-@app.tool()
-def scope_waveform(channel: int, max_points: int = 200, include_csv: bool = False) -> dict:
+@app.tool(share=True)
+def scope_waveform(channel: int, max_points: int = 200, include_csv: bool = False, fresh: bool = False) -> dict:
     """Download the on-screen waveform of one channel (1200 samples) and return summary
     stats plus up to max_points evenly spaced [time_s, volts] samples (0 = stats only,
     1200 = every sample). include_csv=True also returns every sample as CSV text (~30 KB).
     Each download is saved with a timestamp; see scope_waveform_history. For the full
-    acquisition memory (up to 24M points) use scope_export_memory."""
+    acquisition memory (up to 24M points) use scope_export_memory.
+    fresh: true = always take a new reading instead of reusing an identical one from the last ~2 s."""
     ch = app.check_channel(channel)
     with app.scope_lock, app.connect() as s:
         wf = s.waveform(ch)
@@ -180,17 +183,18 @@ def scope_waveform(channel: int, max_points: int = 200, include_csv: bool = Fals
     return result
 
 
-@app.tool()
-def scope_screenshot():
+@app.tool(share=True)
+def scope_screenshot(fresh: bool = False):
     """Capture the scope's display as a PNG. Every screenshot is saved with a UTC
-    timestamp (the last RIGOL_KEEP_SCREENSHOTS are kept); see scope_screenshot_history."""
+    timestamp (the last RIGOL_KEEP_SCREENSHOTS are kept); see scope_screenshot_history.
+    fresh: true = always take a new reading instead of reusing an identical one from the last ~2 s."""
     with app.scope_lock, app.connect() as s:
         png = s.screenshot()
     cap = app.store.save_screenshot(png)
     return [Image(data=png, format="png"), json.dumps(cap.to_dict(app.cfg.public_url))]
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_screenshot_history(limit: int = 20) -> dict:
     """List saved screenshots, newest first (id, UTC timestamp, size, and URL when served
     over HTTP). Does not touch the scope. Use scope_screenshot_get to view one."""
@@ -202,7 +206,7 @@ def scope_screenshot_history(limit: int = 20) -> dict:
     return out
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_screenshot_get(id: str = "latest"):
     """Return a saved screenshot without touching the scope. id is 'latest' (default)
     or an id from scope_screenshot_history."""
@@ -210,7 +214,7 @@ def scope_screenshot_get(id: str = "latest"):
     return [Image(data=cap.path.read_bytes(), format="png"), json.dumps(cap.to_dict(app.cfg.public_url))]
 
 
-@app.tool()
+@app.tool(kind="local")
 def scope_waveform_history(limit: int = 20, kind: Literal["waveforms", "exports", "logs"] = "waveforms") -> dict:
     """List saved screen waveforms (kind='waveforms'), full-memory exports (kind='exports')
     or measurement logs (kind='logs'), newest first, with channel, UTC timestamp, size, URL."""
@@ -220,11 +224,11 @@ def scope_waveform_history(limit: int = 20, kind: Literal["waveforms", "exports"
 
 
 @app.tool()
-def scope_query(command: str) -> str:
+def scope_query(command: str) -> dict:
     """Send a read-only SCPI query (must end with '?') and return the reply,
     e.g. ':CHAN1:BWL?', ':ACQ:MDEP?', ':TRIG:EDG:SLOP?'."""
     command = command.strip()
     if not command.endswith("?"):
         raise ValueError("scope_query only accepts queries ending in '?'; use scope_write to change settings")
     with app.scope_lock, app.connect() as s:
-        return s.query(command)
+        return {"command": command, "reply": s.query(command)}

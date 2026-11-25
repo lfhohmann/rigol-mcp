@@ -14,24 +14,33 @@ mcp = app.mcp
 CHUNK = 250_000  # DS1000Z maximum points per :WAV:DATA? read in BYTE format
 
 
-@app.tool()
+def _raw_mode(s, ch: int) -> None:
+    s.write(f":WAV:SOUR CHAN{ch}")
+    s.write(":WAV:MODE RAW")
+    s.write(":WAV:FORM BYTE")
+
+
+@app.tool(kind=lambda kw: "write" if kw.get("stop") else "read")
 def scope_export_memory(
     channel: int,
     format: Literal["bin", "csv"] = "bin",
     stop: bool = False,
     preview_points: int = 200,
+    ignore_other_sessions: bool = False,
 ) -> dict:
     """Save the channel's FULL acquisition memory (up to 24M points, not just the 1200 on
     screen) to a file, and return stats plus a min/max preview. The scope must be stopped
     (after scope_capture, or STOP pressed); pass stop=true to stop it first (CHANGES THE
     SCOPE: only when the user asks). Transfer runs at about 0.5 M points/s on a DS1000Z, so
-    3M points take ~6 s and 24M points ~50 s, blocking other scope calls meanwhile.
+    3M points take ~6 s and 24M points ~50 s; other calls get a turn between chunks (~0.5 s).
     Use this for accurate stats on narrow pulses or bursts: the 1200-point screen data
     keeps peaks when decimating, so it (and the scope's own measurements) overstate RMS
     and mean for spiky signals.
     format 'bin': raw 8-bit ADC bytes plus a .json with the scaling
     (volts = (byte - yorigin - yreference) * yincrement); compact and fast.
-    format 'csv': time_s,volts rows (about 25 bytes per point, so 24M points is ~600 MB)."""
+    format 'csv': time_s,volts rows (about 25 bytes per point, so 24M points is ~600 MB).
+    ignore_other_sessions: Only set true after YOUR USER agreed to go ahead although another
+    session is using the scope; otherwise leave false and the call is refused while one is."""
     ch = app.check_channel(channel)
     started = time.monotonic()
     with app.scope_lock, app.connect(timeout=max(app.cfg.timeout, 30.0)) as s:
@@ -52,9 +61,7 @@ def scope_export_memory(
         if s.query(f":CHAN{ch}:DISP?") != "1":
             raise ValueError(f"CH{ch} is off; only channels that are on have data")
 
-        s.write(f":WAV:SOUR CHAN{ch}")
-        s.write(":WAV:MODE RAW")
-        s.write(":WAV:FORM BYTE")
+        _raw_mode(s, ch)
         pre = Preamble.parse(s.query(":WAV:PRE?"))
         total = pre.points
         if total <= 0:
@@ -62,44 +69,57 @@ def scope_export_memory(
         sample_rate = s.query(":ACQ:SRAT?")
         memory_depth = s.query(":ACQ:MDEP?")
 
-        ext = ".bin" if format == "bin" else ".csv"
-        cap = app.store.reserve("exports", ext, ch)
-        tmp = cap.path.with_name(cap.name + ".tmp")
-        stats = ByteStats(pre)
-        preview = MinMaxDecimator(total, preview_points if preview_points > 0 else 1)
-        # Frequency from a decimated copy: 1 byte in N keeps memory small for 24M points.
-        stride = max(1, total // 1_000_000)
-        decimated = bytearray()
-        table = [f"{pre.volts(b):.6g}" for b in range(256)]
-        try:
-            with tmp.open("wb") as out:
-                if format == "csv":
-                    out.write(b"time_s,volts\n")
-                start = 1
-                while start <= total:
-                    stop_pt = min(start + CHUNK - 1, total)
+    ext = ".bin" if format == "bin" else ".csv"
+    cap = app.store.reserve("exports", ext, ch)
+    tmp = cap.path.with_name(cap.name + ".tmp")
+    stats = ByteStats(pre)
+    preview = MinMaxDecimator(total, preview_points if preview_points > 0 else 1)
+    # Frequency from a decimated copy: 1 byte in N keeps memory small for 24M points.
+    stride = max(1, total // 1_000_000)
+    decimated = bytearray()
+    table = [f"{pre.volts(b):.6g}" for b in range(256)]
+    timeout = max(app.cfg.timeout, 30.0)
+    try:
+        with tmp.open("wb") as out:
+            if format == "csv":
+                out.write(b"time_s,volts\n")
+            start = 1
+            while start <= total:
+                stop_pt = min(start + CHUNK - 1, total)
+                # One chunk per lock hold, so other calls wait at most ~0.5 s between chunks.
+                # They may switch the readout mode, so set it again every time, and make sure
+                # nobody restarted the scope (that would replace the memory mid-export).
+                with app.scope_lock, app.connect(timeout=timeout) as s:
+                    if s.query(":TRIG:STAT?") != "STOP":
+                        raise RuntimeError("the scope started running during the export (RUN pressed or "
+                                           "another session); the memory changed, so the export was aborted")
+                    _raw_mode(s, ch)
                     s.write(f":WAV:STAR {start}")
                     s.write(f":WAV:STOP {stop_pt}")
                     chunk = s.block(":WAV:DATA?")
-                    if not chunk:
-                        raise ScopeError(f"empty chunk at point {start}")
-                    stats.add(chunk)
-                    preview.add(chunk)
-                    decimated += chunk[(-(start - 1)) % stride::stride]
-                    if format == "bin":
-                        out.write(chunk)
-                    else:
-                        base = start - 1
-                        out.write("".join(
-                            f"{pre.time(base + i):.9g},{table[b]}\n" for i, b in enumerate(chunk)
-                        ).encode())
-                    start += len(chunk)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-        finally:
-            s.write(":WAV:MODE NORM")  # leave the readout mode as other tools expect
-            s.write(":WAV:STAR 1")
+                if not chunk:
+                    raise ScopeError(f"empty chunk at point {start}")
+                stats.add(chunk)
+                preview.add(chunk)
+                decimated += chunk[(-(start - 1)) % stride::stride]
+                if format == "bin":
+                    out.write(chunk)
+                else:
+                    base = start - 1
+                    out.write("".join(
+                        f"{pre.time(base + i):.9g},{table[b]}\n" for i, b in enumerate(chunk)
+                    ).encode())
+                start += len(chunk)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        try:
+            with app.scope_lock, app.connect() as s:
+                s.write(":WAV:MODE NORM")  # leave the readout mode as other tools expect
+                s.write(":WAV:STAR 1")
+        except Exception:
+            pass
 
     elapsed = time.monotonic() - started
     summary = stats.summary()
