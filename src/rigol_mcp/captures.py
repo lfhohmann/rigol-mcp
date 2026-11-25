@@ -12,9 +12,10 @@ KINDS = {
     "screenshots": ("screenshot", (".png",)),
     "waveforms": ("waveform", (".csv",)),
     "exports": ("export", (".bin", ".csv")),  # full-memory dumps, with a .json sidecar
+    "logs": ("log", (".csv",)),  # measurement logs, written while they run
 }
 NAME_RE = re.compile(
-    r"^(?P<prefix>screenshot|waveform|export)_(?P<id>\d{8}T\d{6}\.\d{3}Z)(?:_ch(?P<ch>[1-4]))?(?P<ext>\.(?:png|csv|bin))$"
+    r"^(?P<prefix>screenshot|waveform|export|log)_(?P<id>\d{8}T\d{6}\.\d{3}Z)(?:_ch(?P<ch>[1-4]))?(?P<ext>\.(?:png|csv|bin))$"
 )
 
 
@@ -58,9 +59,11 @@ def _new_id() -> str:
 class CaptureStore:
     """Files live in <root>/screenshots and <root>/waveforms. keep=0 means keep everything."""
 
-    def __init__(self, root: Path, keep_screenshots: int = 100, keep_waveforms: int = 100, keep_exports: int = 10):
+    def __init__(self, root: Path, keep_screenshots: int = 100, keep_waveforms: int = 100, keep_exports: int = 10,
+                 keep_logs: int = 50):
         self.root = Path(root)
-        self.keep = {"screenshots": keep_screenshots, "waveforms": keep_waveforms, "exports": keep_exports}
+        self.keep = {"screenshots": keep_screenshots, "waveforms": keep_waveforms, "exports": keep_exports,
+                     "logs": keep_logs}
         self._lock = threading.Lock()
 
     def dir(self, kind: str) -> Path:

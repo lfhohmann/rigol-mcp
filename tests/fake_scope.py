@@ -49,6 +49,8 @@ class FakeScope:
             ":CHAN1:PROB": "1.000000e+00", ":CHAN1:BWL": "OFF", ":CHAN1:INV": "0",
             ":WAV:MODE": "NORM", ":WAV:STAR": "1", ":WAV:STOP": "1200", ":WAV:SOUR": "CHAN1",
         }
+        self.vary = False  # make VPP change on every reading (for logging tests)
+        self.counter = 0
         self.run_state = "RUN"  # RUN | SINGLE | STOP
         self.armed_at = 0.0
         self.writes: list[str] = []
@@ -114,6 +116,9 @@ class FakeScope:
             args = cmd.split(None, 1)[1].split(",")
             if args[0].upper() == "RTIM":
                 return b"measure error!\n\n"  # real scopes leave a stray newline
+            if self.vary and args[0].upper() == "VPP":
+                self.counter += 1
+                return f"{3.0 + (self.counter % 5) * 0.1:e}\n".encode()
             return (self.MEASURE.get(args[0].upper(), "9.9E37") + "\n").encode()
         if cmd == ":WAV:DATA?":
             if self.state[":WAV:MODE"] == "RAW":

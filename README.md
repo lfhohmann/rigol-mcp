@@ -41,6 +41,7 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 - [Option 2: Docker (HTTP bridge)](#option-2-docker-http-bridge)
 - [Option 3: HTTP without Docker](#option-3-http-without-docker)
 - [Capturing an event and the full memory](#capturing-an-event-and-the-full-memory)
+- [Setups, logging and the audit log](#setups-logging-and-the-audit-log)
 - [Screenshot history and gallery](#screenshot-history-and-gallery)
 - [Configuration](#configuration)
 - [Security](#security)
@@ -72,8 +73,18 @@ DS1074Z, DS1102Z-E, MSO1104Z and so on) use the same command set and should work
 | `scope_set_acquire` | Normal, averaging, peak detect, high-res; memory depth | **writes** |
 | `scope_capture` | Arms a single trigger, waits for the event, returns a screenshot and per-channel summary | **writes** |
 | `scope_write` | Any other SCPI setting command | **writes** |
+| **Setups, logging, audit** | | |
+| `scope_setup_save` | Saves every setting (4 channels, timebase, acquisition, trigger, run/stop) to a named file | no |
+| `scope_setup_list` | Lists saved setups | no |
+| `scope_setup_restore` | Restores a setup: sends only what differs, paced, and saves an undo point first; `dry_run` just shows the differences | **writes** |
+| `scope_log_start` | Logs measurements every N seconds to a CSV in the background (up to 24 h) | no* |
+| `scope_log_status` | Progress, last values and min/max/mean of a running log | no |
+| `scope_log_stop` | Stops a log early | no |
+| `scope_audit_log` | Recent setting changes: time, client, tool, SCPI commands, scope reply | no |
 
 \* `scope_export_memory` needs the scope stopped. With `stop=true` it stops the scope itself.
+Measurement tools (`scope_measure*`, `scope_log_start`) add their items to the scope's on-screen
+measurement bar.
 
 **Measurements show up on the scope.** When asked for a measurement, the DS1000Z also adds
 it to the measurement bar at the bottom of its screen (it keeps the last 5). The reading
@@ -244,6 +255,25 @@ on a DS1104Z), so 3M points take ~6 s and 24M points ~50 s, and other calls wait
 > points above 0.3 V while the full record had 0.21%. Screen-based RMS read 0.317 V; the
 > true RMS from the full record was 0.034 V.
 
+## Setups, logging and the audit log
+
+- **Setups.** Ask *"save the scope setup as bench"* before an experiment and *"restore bench"*
+  afterwards. `scope_setup_restore` reads the scope first and sends only the settings that
+  differ, one at a time with a pause and a confirmation each (a fast burst of commands can hang
+  the DS1000Z's network interface). It saves the current state as `auto-before-restore`
+  first, so a restore can be undone. Setups are JSON files in `<data dir>/setups/`.
+- **Measurement logging.** *"Log Vpp and frequency on CH1 every second for 10 minutes"* starts
+  a background job that writes `<data dir>/logs/log_<time>.csv`. Other tools keep working
+  meanwhile; each reading holds the scope only briefly. The gallery shows a small chart per log.
+  The last `RIGOL_KEEP_LOGS` (default 50) are kept.
+- **Audit log.** Every setting change made through the server is appended to
+  `<data dir>/audit.jsonl` with the UTC time, the client (IP address and program for HTTP
+  clients), the tool, the exact SCPI commands and the scope's reply. `scope_audit_log` and the
+  gallery show the most recent ones.
+- **Long calls don't block the bridge.** Tools run in worker threads, so a 50 s memory export
+  or a capture waiting for a trigger doesn't stop other agents from listing screenshots or
+  checking a log; calls that need the scope simply wait their turn.
+
 ## Screenshot history and gallery
 
 - Every `scope_screenshot` call saves a PNG named with its UTC time, e.g.
@@ -277,6 +307,7 @@ All settings are environment variables. In Docker they go in `.env`.
 | `RIGOL_KEEP_SCREENSHOTS` | `100` | Screenshots to keep; `0` keeps all |
 | `RIGOL_KEEP_WAVEFORMS` | `100` | Waveform CSVs to keep; `0` keeps all |
 | `RIGOL_KEEP_EXPORTS` | `10` | Full-memory exports to keep; `0` keeps all |
+| `RIGOL_KEEP_LOGS` | `50` | Measurement logs to keep; `0` keeps all |
 | `RIGOL_READ_ONLY` | off | `1` blocks every tool that changes the scope |
 | `RIGOL_TRANSPORT` | `stdio` | `http` is the same as `--http` |
 | `RIGOL_HTTP_HOST` | `0.0.0.0` | HTTP bind address (or `--bind`) |

@@ -14,7 +14,7 @@ mcp = app.mcp
 CHUNK = 250_000  # DS1000Z maximum points per :WAV:DATA? read in BYTE format
 
 
-@mcp.tool()
+@app.tool()
 def scope_export_memory(
     channel: int,
     format: Literal["bin", "csv"] = "bin",
@@ -44,6 +44,7 @@ def scope_export_memory(
                 )
             app.require_writes()
             s.write(":STOP")
+            app.audit([":STOP"])
             for _ in range(50):
                 if s.query(":TRIG:STAT?") == "STOP":
                     break

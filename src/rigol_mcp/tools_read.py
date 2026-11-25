@@ -26,7 +26,7 @@ PAIR_ITEMS = {
 }
 
 
-@mcp.tool()
+@app.tool()
 def scope_status() -> dict:
     """Overview of the scope: model, run state, trigger, timebase, sample rate, memory depth,
     and for each channel that is on: V/div, offset, coupling, probe, plus Vpp, Vmin, Vmax,
@@ -68,7 +68,7 @@ def scope_status() -> dict:
         return out
 
 
-@mcp.tool()
+@app.tool()
 def scope_measure(channel: int, items: list[str] | None = None) -> dict:
     """Run the scope's built-in measurements on one channel (1-4). Each takes ~40-400 ms.
     items: any of VMAX VMIN VPP VTOP VBASE VAMP VAVG VRMS OVER PRES MAR MPAR PER FREQ
@@ -83,7 +83,7 @@ def scope_measure(channel: int, items: list[str] | None = None) -> dict:
         return {item.upper(): parse_number(s.query(f":MEAS:ITEM? {item},CHAN{ch}")) for item in items}
 
 
-@mcp.tool()
+@app.tool()
 def scope_measure_between(
     channel_a: int,
     channel_b: int,
@@ -108,7 +108,7 @@ def scope_measure_between(
     return {"channel_a": a, "channel_b": b, "values": out, "units": {k: units[k] for k in out}}
 
 
-@mcp.tool()
+@app.tool()
 def scope_measure_stats(channel: int, item: str = "VPP", samples: int = 10, interval_s: float = 0.0) -> dict:
     """Repeat one built-in measurement several times and return statistics (mean, min,
     max, stdev). Useful for jitter, drift and noisy signals. samples: 2-100. Each reading
@@ -143,7 +143,7 @@ def scope_measure_stats(channel: int, item: str = "VPP", samples: int = 10, inte
     return out
 
 
-@mcp.tool()
+@app.tool()
 def scope_waveform(channel: int, max_points: int = 200, include_csv: bool = False) -> dict:
     """Download the on-screen waveform of one channel (1200 samples) and return summary
     stats plus up to max_points evenly spaced [time_s, volts] samples (0 = stats only,
@@ -180,7 +180,7 @@ def scope_waveform(channel: int, max_points: int = 200, include_csv: bool = Fals
     return result
 
 
-@mcp.tool()
+@app.tool()
 def scope_screenshot():
     """Capture the scope's display as a PNG. Every screenshot is saved with a UTC
     timestamp (the last RIGOL_KEEP_SCREENSHOTS are kept); see scope_screenshot_history."""
@@ -190,7 +190,7 @@ def scope_screenshot():
     return [Image(data=png, format="png"), json.dumps(cap.to_dict(app.cfg.public_url))]
 
 
-@mcp.tool()
+@app.tool()
 def scope_screenshot_history(limit: int = 20) -> dict:
     """List saved screenshots, newest first (id, UTC timestamp, size, and URL when served
     over HTTP). Does not touch the scope. Use scope_screenshot_get to view one."""
@@ -202,7 +202,7 @@ def scope_screenshot_history(limit: int = 20) -> dict:
     return out
 
 
-@mcp.tool()
+@app.tool()
 def scope_screenshot_get(id: str = "latest"):
     """Return a saved screenshot without touching the scope. id is 'latest' (default)
     or an id from scope_screenshot_history."""
@@ -210,16 +210,16 @@ def scope_screenshot_get(id: str = "latest"):
     return [Image(data=cap.path.read_bytes(), format="png"), json.dumps(cap.to_dict(app.cfg.public_url))]
 
 
-@mcp.tool()
-def scope_waveform_history(limit: int = 20, kind: Literal["waveforms", "exports"] = "waveforms") -> dict:
-    """List saved screen waveforms (kind='waveforms') or full-memory exports
-    (kind='exports'), newest first, with channel, UTC timestamp, size and URL."""
+@app.tool()
+def scope_waveform_history(limit: int = 20, kind: Literal["waveforms", "exports", "logs"] = "waveforms") -> dict:
+    """List saved screen waveforms (kind='waveforms'), full-memory exports (kind='exports')
+    or measurement logs (kind='logs'), newest first, with channel, UTC timestamp, size, URL."""
     caps = app.store.list(kind, limit)
     keep = app.store.keep[kind]
     return {"kept_max": keep or "unlimited", kind: [c.to_dict(app.cfg.public_url) for c in caps]}
 
 
-@mcp.tool()
+@app.tool()
 def scope_query(command: str) -> str:
     """Send a read-only SCPI query (must end with '?') and return the reply,
     e.g. ':CHAN1:BWL?', ':ACQ:MDEP?', ':TRIG:EDG:SLOP?'."""

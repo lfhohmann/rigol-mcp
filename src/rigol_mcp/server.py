@@ -6,7 +6,7 @@ import argparse
 import os
 
 from . import __version__, app
-from . import tools_control, tools_export, tools_read  # noqa: F401  (registers the tools)
+from . import tools_control, tools_export, tools_log, tools_read, tools_setup  # noqa: F401  (registers the tools)
 from .app import Config, configure, mcp  # noqa: F401  (re-exported for convenience)
 
 

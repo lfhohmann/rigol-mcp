@@ -36,14 +36,16 @@ def _apply(s: Scope, commands: list[str]) -> str:
         s.write(cmd)
         s.query("*OPC?")  # wait until the scope has processed it
         time.sleep(COMMAND_GAP_S)
-    return s.query(":SYST:ERR?")
+    error = s.query(":SYST:ERR?")
+    app.audit(commands, error)
+    return error
 
 
 def _onoff(value: bool) -> str:
     return "ON" if value else "OFF"
 
 
-@mcp.tool()
+@app.tool()
 def scope_run_control(action: Literal["run", "stop", "single", "autoscale", "force_trigger", "clear"]) -> dict:
     """Run/stop acquisition. CHANGES THE SCOPE: only when the user asks.
     run: continuous acquisition. stop: freeze the display. single: arm one trigger, then
@@ -58,7 +60,7 @@ def scope_run_control(action: Literal["run", "stop", "single", "autoscale", "for
         return {"action": action, "trigger_status": s.query(":TRIG:STAT?"), "error": error}
 
 
-@mcp.tool()
+@app.tool()
 def scope_set_channel(
     channel: int,
     display: bool | None = None,
@@ -109,7 +111,7 @@ def scope_set_channel(
         }
 
 
-@mcp.tool()
+@app.tool()
 def scope_set_timebase(
     scale_s_per_div: float | None = None,
     offset_s: float | None = None,
@@ -144,7 +146,7 @@ def scope_set_timebase(
 TriggerSource = Literal["CHAN1", "CHAN2", "CHAN3", "CHAN4", "AC"]
 
 
-@mcp.tool()
+@app.tool()
 def scope_set_trigger(
     source: TriggerSource | None = None,
     level_v: float | None = None,
@@ -188,7 +190,7 @@ def scope_set_trigger(
         }
 
 
-@mcp.tool()
+@app.tool()
 def scope_set_acquire(
     type: Literal["NORM", "AVER", "PEAK", "HRES"] | None = None,
     averages: int | None = None,
@@ -222,7 +224,7 @@ def scope_set_acquire(
         }
 
 
-@mcp.tool()
+@app.tool()
 def scope_capture(
     timeout_s: float = 10.0,
     channels: list[int] | None = None,
@@ -293,7 +295,7 @@ def scope_capture(
     return [Image(data=png, format="png"), json.dumps(result)]
 
 
-@mcp.tool()
+@app.tool()
 def scope_write(command: str) -> str:
     """Send any SCPI setting command (no reply) for things the typed tools don't cover,
     e.g. ':MATH:DISP ON', ':MEAS:STAT:DISP ON'. CHANGES THE SCOPE: only when the user asks.

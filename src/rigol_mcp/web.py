@@ -25,13 +25,25 @@ class TokenAuth:
         self.app = app
         self.token = token
 
+    async def _call_as_client(self, scope, receive, send, headers):
+        """Remember who is calling (for the audit log) while the request runs."""
+        ip = (scope.get("client") or ("?", 0))[0]
+        agent = headers.get("user-agent", "").split(" ")[0][:40]
+        token = app.client_var.set(f"{ip} {agent}".strip())
+        try:
+            return await self.app(scope, receive, send)
+        finally:
+            app.client_var.reset(token)
+
     def _ok(self, candidate: str | None) -> bool:
         return bool(candidate) and hmac.compare_digest(candidate.encode(), self.token.encode())
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not self.token or scope["path"] in PUBLIC_PATHS:
+        if scope["type"] != "http" or scope["path"] in PUBLIC_PATHS:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
+        if not self.token:
+            return await self._call_as_client(scope, receive, send, headers)
         auth = headers.get("authorization", "")
         bearer = auth[7:] if auth.lower().startswith("bearer ") else None
         cookie = None
@@ -43,7 +55,7 @@ class TokenAuth:
         if scope["method"] == "GET":
             query = (parse_qs(scope.get("query_string", b"").decode()).get("token") or [None])[0]
         if self._ok(bearer) or self._ok(cookie) or self._ok(query):
-            return await self.app(scope, receive, send)
+            return await self._call_as_client(scope, receive, send, headers)
         await PlainTextResponse("unauthorized: missing or wrong token\n", status_code=401)(scope, receive, send)
 
 
@@ -66,7 +78,68 @@ figure img { display:block; width:100%; height:auto; }
 figcaption { padding:8px 12px; display:flex; justify-content:space-between; color:var(--dim); font-size:13px; }
 figcaption a { color:inherit; } .latest { outline:2px solid #3b82f6; }
 p.empty { text-align:center; color:var(--dim); }
+h2 { font-size:16px; margin:0; } .dim { color:var(--dim); font-size:13px; } .wide { max-width:1200px; margin:0 auto; }
+.log .spark { padding:8px 12px; display:flex; flex-direction:column; gap:4px; } .log svg { width:100%; height:60px; }
+.tablewrap { overflow-x:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; } th { color:var(--dim); font-weight:500; }
 """
+
+
+def _sparkline(path, width: int = 320, height: int = 60) -> str:
+    """Inline SVG of the first data column of a measurement-log CSV."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return ""
+    if len(lines) < 3:
+        return '<span class="dim">not enough data yet</span>'
+    name = lines[0].split(",")[2] if len(lines[0].split(",")) > 2 else ""
+    values = []
+    for line in lines[1:]:
+        cells = line.split(",")
+        try:
+            values.append(float(cells[2]))
+        except (IndexError, ValueError):
+            continue
+    if len(values) < 2:
+        return '<span class="dim">no valid values</span>'
+    step = max(1, len(values) // width)
+    values = values[::step]
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    pts = " ".join(
+        f"{i * (width - 4) / (len(values) - 1) + 2:.1f},{height - 2 - (v - lo) / span * (height - 4):.1f}"
+        for i, v in enumerate(values)
+    )
+    return (f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" '
+            f'aria-label="{html.escape(name)} from {lo:.4g} to {hi:.4g}">'
+            f'<polyline fill="none" stroke="#3b82f6" stroke-width="1.5" points="{pts}"/></svg>'
+            f'<span class="dim">{html.escape(name)}: {lo:.4g} to {hi:.4g}</span>')
+
+
+def _logs_and_audit_html() -> str:
+    parts = []
+    logs = app.store.list("logs", 10)
+    if logs:
+        rows = "".join(
+            f'<figure class="log"><figcaption><span>{html.escape(cap.timestamp.replace("T", " ").replace("Z", " UTC"))}'
+            f'</span><a href="logs/{html.escape(cap.name)}" download>CSV</a></figcaption>'
+            f'<div class="spark">{_sparkline(cap.path)}</div></figure>'
+            for cap in logs
+        )
+        parts.append(f'<header style="margin-top:24px"><h2>Measurement logs</h2></header><div class="grid">{rows}</div>')
+    entries = app.read_audit(15)
+    if entries:
+        rows = "".join(
+            f"<tr><td>{html.escape(e['timestamp_utc'][:19].replace('T', ' '))}</td><td>{html.escape(e.get('client', ''))}</td>"
+            f"<td>{html.escape(e.get('tool', ''))}</td><td><code>{html.escape('; '.join(e.get('commands', [])))[:200]}</code></td>"
+            f"<td>{html.escape(e.get('error') or '')}</td></tr>"
+            for e in entries
+        )
+        parts.append('<header style="margin-top:24px"><h2>Recent setting changes</h2></header>'
+                     '<div class="tablewrap"><table><thead><tr><th>UTC</th><th>Client</th><th>Tool</th><th>Commands</th>'
+                     f'<th>Scope reply</th></tr></thead><tbody>{rows}</tbody></table></div>')
+    return "".join(parts)
 
 
 def _gallery_html() -> str:
@@ -101,6 +174,7 @@ def _gallery_html() -> str:
 <div class="grid">{body}</div>
 {f'<header style="margin-top:24px"><span>Recent waveforms: {wave_links}</span></header>' if waves else ''}
 {f'<header><span>Memory exports: {export_links}</span></header>' if exports else ''}
+<div class="wide">{_logs_and_audit_html()}</div>
 </body></html>"""
 
 
@@ -127,6 +201,10 @@ def build_app():
     @mcp.custom_route("/waveforms/{name}", methods=["GET"])
     async def waveform_file(request: Request) -> Response:
         return _file("waveforms", request.path_params["name"])
+
+    @mcp.custom_route("/logs/{name}", methods=["GET"])
+    async def log_file(request: Request) -> Response:
+        return _file("logs", request.path_params["name"])
 
     @mcp.custom_route("/exports/{name}", methods=["GET"])
     async def export_file(request: Request) -> Response:

@@ -47,3 +47,19 @@ def test_export_download_and_sidecar(client, fake):
     assert len(client.get(f"/exports/{name}", headers=h).content) == 500
     assert client.get(f"/exports/{name[:-4]}.json", headers=h).json()["points"] == 500
     assert "Memory exports" in client.get("/screenshots", headers=h).text
+
+
+def test_gallery_shows_logs_and_audit(client, fake):
+    import time
+    from rigol_mcp.tools_control import scope_run_control
+    from rigol_mcp.tools_log import scope_log_start
+    fake.vary = True
+    scope_run_control("stop")
+    scope_log_start(interval_s=0.2, duration_s=1.0)
+    time.sleep(1.4)
+    h = {"Authorization": "Bearer s3cret"}
+    page = client.get("/screenshots", headers=h).text
+    assert "Measurement logs" in page and "<polyline" in page
+    assert "Recent setting changes" in page and ":STOP" in page
+    name = app.store.list("logs")[0].name
+    assert client.get(f"/logs/{name}", headers=h).text.startswith("timestamp_utc")
